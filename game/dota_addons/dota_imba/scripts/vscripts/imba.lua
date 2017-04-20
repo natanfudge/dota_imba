@@ -27,6 +27,8 @@ require('libraries/attachments')
 -- These internal libraries set up barebones's events and processes.  Feel free to inspect them/change them if you need to.
 require('internal/gamemode')
 require('internal/events')
+-- This library used to handle scoreboard events
+require('internal/scoreboard_events')
 
 -- settings.lua is where you can specify many different properties for your game mode and is one of the core barebones files.
 require('settings')
@@ -590,8 +592,9 @@ function GameMode:OrderFilter( keys )
 	if unit:HasModifier("modifier_imba_sonic_wave_daze") then
 
 		-- Determine order type
+		local modifier = unit:FindModifierByName("modifier_imba_sonic_wave_daze")
 		local rand = math.random
-			
+		
 		-- Change "move to target" to "move to position"
 		if keys.order_type == DOTA_UNIT_ORDER_MOVE_TO_TARGET then
 			local target = EntIndexToHScript(keys["entindex_target"])
@@ -615,14 +618,15 @@ function GameMode:OrderFilter( keys )
 		end
 
 		-- Change "cast on target" target
-		if keys.order_type == DOTA_UNIT_ORDER_CAST_TARGET or keys.order_type == DOTA_UNIT_ORDER_CAST_TARGET_TREE then
+		if keys.order_type == DOTA_UNIT_ORDER_CAST_TARGET then
 			
 			local target = EntIndexToHScript(keys["entindex_target"])
+			local ability = EntIndexToHScript(keys["entindex_ability"])
 			local caster_loc = unit:GetAbsOrigin()
 			local target_loc = target:GetAbsOrigin()
 			local target_distance = (target_loc - caster_loc):Length2D()
-			local found_new_target = false
-			local nearby_units = FindUnitsInRadius(DOTA_TEAM_GOODGUYS, caster_loc, nil, target_distance, DOTA_UNIT_TARGET_TEAM_BOTH, DOTA_UNIT_TARGET_HERO + DOTA_UNIT_TARGET_BASIC + DOTA_UNIT_TARGET_BUILDING, DOTA_UNIT_TARGET_FLAG_MAGIC_IMMUNE_ENEMIES + DOTA_UNIT_TARGET_FLAG_NO_INVIS + DOTA_UNIT_TARGET_FLAG_FOW_VISIBLE, FIND_ANY_ORDER, false)
+			
+			local nearby_units = FindUnitsInRadius(unit:GetTeamNumber(), caster_loc, nil, math.max(target_distance,(ability:GetCastRange(caster_loc, unit)) + GetCastRangeIncrease(unit)), ability:GetAbilityTargetTeam(), ability:GetAbilityTargetType(), ability:GetAbilityTargetFlags(), FIND_ANY_ORDER, false)
 			if #nearby_units >= 1 then
 				keys.entindex_target = nearby_units[1]:GetEntityIndex()
 
@@ -634,6 +638,17 @@ function GameMode:OrderFilter( keys )
 				keys.entindex_target = 0
 				keys.order_type = DOTA_UNIT_ORDER_CAST_POSITION
 			end
+			
+			-- Reduce stack-amount
+			modifier:DecrementStackCount()
+			if modifier:GetStackCount() == 0 then
+				modifier:Destroy()
+			end
+		end
+		
+		if keys.order_type == DOTA_UNIT_ORDER_CAST_TARGET_TREE then
+			-- Still needs some checkup
+			
 		end
 
 		-- Spin positional orders a random angle
@@ -643,18 +658,32 @@ function GameMode:OrderFilter( keys )
 			local target_loc = Vector(keys.position_x, keys.position_y, keys.position_z)
 			local origin_loc = unit:GetAbsOrigin()
 			local order_vector = target_loc - origin_loc
-			local new_order_vector = RotatePosition(origin_loc, QAngle(0, rand(45, 315), 0), origin_loc + order_vector)
+			local new_order_vector = RotatePosition(origin_loc, QAngle(0, 180, 0), origin_loc + order_vector)
 
 			-- Override order
 			keys.position_x = new_order_vector.x
 			keys.position_y = new_order_vector.y
 			keys.position_z = new_order_vector.z
+			
+			-- Reduce stack-amount
+			modifier:DecrementStackCount()
+			if modifier:GetStackCount() == 0 then
+				modifier:Destroy()
+			end
 		end
 	end
 	
-	-- Kunkka Torrent & Tidebringer cast-handling
-	if keys.order_type == DOTA_UNIT_ORDER_CAST_POSITION then
+	if keys.order_type == DOTA_UNIT_ORDER_CAST_NO_TARGET then
 		local ability = EntIndexToHScript(keys.entindex_ability)
+		
+		-- Magnataur Skewer handler
+		if unit:HasModifier("modifier_imba_skewer_motion_controller") then
+			if ability:GetAbilityName() == "imba_magnataur_skewer" then
+				unit:FindModifierByName("modifier_imba_skewer_motion_controller").begged_for_pardon = true
+			end
+		end
+		
+		-- Kunkka Torrent cast-handling
 		if ability:GetAbilityName() == "imba_kunkka_torrent" then
 			local range = ability.BaseClass.GetCastRange(ability,ability:GetCursorPosition(),unit) + GetCastRangeIncrease(unit)
 			if unit:HasModifier("modifier_imba_ebb_and_flow_tide_low") or unit:HasModifier("modifier_imba_ebb_and_flow_tsunami") then
@@ -666,17 +695,20 @@ function GameMode:OrderFilter( keys )
 				unit:AddNewModifier(unit, ability, "modifier_imba_torrent_cast", {duration = 0.41} )
 			end
 		end
+		
+		-- Kunkka Tidebringer cast-handling
 		if ability:GetAbilityName() == "imba_kunkka_tidebringer" then
 			ability.manual_cast = true
 		end
-	elseif unit:HasModifier("modifier_imba_torrent_cast") and keys.order_type ==  DOTA_UNIT_ORDER_HOLD_POSITION then
+		
+	elseif unit:HasModifier("modifier_imba_torrent_cast") and keys.order_type == DOTA_UNIT_ORDER_HOLD_POSITION then
 		unit:RemoveModifierByName("modifier_imba_torrent_cast")
 	end
 	-- Tidebringer manual cast
 	if unit:HasModifier("modifier_imba_tidebringer_manual") then
 		unit:RemoveModifierByName("modifier_imba_tidebringer_manual")
 	end
-
+	
 	return true
 end
 
@@ -1442,6 +1474,8 @@ function GameMode:InitGameMode()
 
 	GameRules.HeroKV = LoadKeyValues("scripts/npc/npc_heroes_custom.txt")
 	GameRules.UnitKV = LoadKeyValues("scripts/npc/npc_units_custom.txt")
+
+	initScoreBoardEvents()
 end
 
 -- This is an example console command

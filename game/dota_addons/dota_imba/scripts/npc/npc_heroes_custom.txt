@@ -1835,9 +1835,9 @@
 		"AttackRange"				"200"
 
 		"Ability1"					"imba_pudge_meat_hook"
-		"Ability2"					"imba_pudge_rot"
-		"Ability3"					"imba_pudge_flesh_heap"
-		"Ability4"					"imba_pudge_cleaver"
+		"Ability2"					"imba_pudge_rot"	
+		"Ability3"					"imba_pudge_cleaver"
+		"Ability4"					"imba_pudge_flesh_heap"
 		"Ability5"					"imba_pudge_dismember"
 
 		"Ability10"					"special_bonus_imba_pudge_1"

@@ -15,6 +15,7 @@ end
 function imba_pudge_meat_hook:GetCustomCastErrorLocation(loc)
 	return "Already sent out your hook!"
 end
+
 if IsServer() then
 	function imba_pudge_meat_hook:OnAbilityPhaseStart()
 		self:GetCaster():StartGesture( ACT_DOTA_OVERRIDE_ABILITY_1 )
@@ -42,32 +43,22 @@ if IsServer() then
 		self.hook_launched = true
 		
 		-- Parameters
-		local hook_speed = self:GetTalentSpecialValueFor("hook_speed")
+		local hook_speed = self:GetTalentSpecialValueFor("base_speed")
 		local hook_width = self:GetTalentSpecialValueFor("hook_width")
-		local hook_range = self:GetTalentSpecialValueFor("hook_distance")
-		local hook_damage = self:GetTalentSpecialValueFor("hook_damage")
+		local hook_range = self:GetTalentSpecialValueFor("base_range")
+		local hook_damage = self:GetTalentSpecialValueFor("base_damage")
 		if caster:HasScepter() then hook_damage = self:GetTalentSpecialValueFor("damage_scepter") end
 		local enemy_disable_linger = self:GetTalentSpecialValueFor("enemy_disable_linger")
 		local caster_loc = caster:GetAbsOrigin()
 		local start_loc = caster_loc + (self:GetCursorPosition() - caster_loc):Normalized() * hook_width
 
 		-- Prevent Pudge from moving while the hook is out
-		local flFollowthroughDuration = ( hook_range / hook_speed * 0.75 )
+		local flFollowthroughDuration = ( hook_range / hook_speed )
 		self:GetCaster():AddNewModifier(self:GetCaster(), self, "modifier_meat_hook_followthrough_lua", {duration = flFollowthroughDuration})
 
 		-- Play Hook launch sound
 		caster:EmitSound("Hero_Pudge.AttackHookExtend")
 		
-		-- Attach the Hook particle
-		local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_chain.vpcf", PATTACH_RENDERORIGIN_FOLLOW, caster)
-		ParticleManager:SetParticleAlwaysSimulate(hook_pfx)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 0, caster, PATTACH_POINT_FOLLOW, "attach_weapon_chain_rt", caster_loc, true)
-		ParticleManager:SetParticleControl(hook_pfx, 1, start_loc)
-		ParticleManager:SetParticleControl(hook_pfx, 2, Vector(hook_speed, hook_range, hook_width) )
-		ParticleManager:SetParticleControl(hook_pfx, 6, start_loc)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 6, hook_dummy, PATTACH_POINT_FOLLOW, "attach_overhead", start_loc, false)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 7, caster, PATTACH_CUSTOMORIGIN, nil, caster_loc, true)
-
 		-- Remove the caster's hook
 		local weapon_hook
 		if caster:IsHero() then
@@ -78,60 +69,68 @@ if IsServer() then
 		end
 		
 		-- Create and set up the Hook dummy unit
-		local hook_dummy = CreateUnitByName("npc_dummy_blank", start_loc + Vector(0, 0, 150), false, caster, caster, caster:GetTeam())
-		hook_dummy:SetModel(weapon_hook:GetModelName())
-		hook_dummy:SetForwardVector(caster:GetForwardVector())
+		local hook_loc = start_loc + Vector(0,0, 90)
+		local hook_dummy = CreateUnitByName("npc_dummy_unit", start_loc, false, caster, caster, caster:GetTeam())
+		hook_dummy:SetAbsOrigin(hook_loc)
+		hook_dummy:AddNewModifier(caster, self, "modifier_phased", {})
+		hook_dummy:SetForwardVector(-caster:GetForwardVector())
+		
+		-- Attach the Hook particle
+		local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_chain.vpcf", PATTACH_RENDERORIGIN_FOLLOW, caster)
+		ParticleManager:SetParticleAlwaysSimulate(hook_pfx)
+		ParticleManager:SetParticleControlEnt(hook_pfx, 0, caster, PATTACH_POINT_FOLLOW, "attach_weapon_chain_rt", caster_loc, true)
+		ParticleManager:SetParticleControl(hook_pfx, 1, start_loc)
+		ParticleManager:SetParticleControl(hook_pfx, 6, start_loc)
+		ParticleManager:SetParticleControlEnt(hook_pfx, 6, hook_dummy, PATTACH_POINT_FOLLOW, "ArbitraryChain2_plc2", start_loc, false)
 
 		-- Initialize Hook variables
-		local hook_loc = start_loc
-		local tick_rate = GetFrameTime()
+		print(hook_dummy:GetAbsOrigin(), hook_loc, "INIT", FrameTime())
+		local tick_rate = FrameTime()
 		hook_speed = hook_speed * tick_rate
 
 		local travel_distance = (hook_loc - caster_loc):Length2D()
 		local hook_step = (self:GetCursorPosition() - caster_loc):Normalized() * hook_speed
+		hook_step.z = 0
 
-		local target = {}
+		local targets = {} -- For damage
 		local shish_kebab = self:GetTalentSpecialValueFor("shish_kebab")
 
 		-- Main Hook loop
 		local hooks_thrown = 1
 		if caster:HasTalent("special_bonus_unique_pudge_8") then hooks_thrown = 3 end
-		for i, hooks_thrown do 
-			Timers:CreateTimer(tick_rate, function()
-				-- Check for valid units in the area
+		for i = 1, hooks_thrown do
+			
+			Timers:CreateTimer(function()
+				-- Check for valid units in the area 
 				local units = FindUnitsInRadius(caster:GetTeamNumber(), hook_loc, nil, hook_width, DOTA_UNIT_TARGET_TEAM_BOTH, DOTA_UNIT_TARGET_HERO + DOTA_UNIT_TARGET_CREEP, DOTA_UNIT_TARGET_FLAG_MAGIC_IMMUNE_ENEMIES + DOTA_UNIT_TARGET_FLAG_INVULNERABLE, FIND_CLOSEST, false)
 				for _,unit in pairs(units) do
-					if unit ~= caster and unit ~= hook_dummy then
-						table.insert(target, unit)
+					if unit ~= caster and unit ~= hook_dummy and not targets[unit:entindex()] then
+						-- Apply stun/root modifier, and damage if the target is an enemy
+						if caster:GetTeamNumber() ~= unit:GetTeamNumber() then
+							ApplyDamage({attacker = caster, victim = unit, ability = ability, damage = hook_damage, damage_type = DAMAGE_TYPE_PURE})
+						end
+						shish_kebab = shish_kebab - 1
+						-- Play the hit sound and particle
+						unit:EmitSound("Hero_Pudge.AttackHookImpact")
+						local hit_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_impact.vpcf", PATTACH_ABSORIGIN_FOLLOW, unit)
+						ParticleManager:ReleaseParticleIndex(hit_pfx)
+						targets[unit:entindex()] = true
 						break
 					end
 				end
-
 				-- If a valid target was hit, start dragging them
-				if #target >= shish_kebab then
-
-					-- Apply stun/root modifier, and damage if the target is an enemy
-					if caster:GetTeam() ~= target:GetTeam() then
-						ApplyDamage({attacker = caster, victim = target, ability = ability, damage = hook_damage, damage_type = DAMAGE_TYPE_PURE})
-					end
-
-					-- Play the hit sound and particle
-					target:EmitSound("Hero_Pudge.AttackHookImpact")
-					local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_impact.vpcf", PATTACH_ABSORIGIN_FOLLOW, target)
-
-				elseif travel_distance < hook_range then
+				print(travel_distance, hook_range)
+				
+				if travel_distance < hook_range and shish_kebab > 0 then
 
 					-- Move the hook
-					hook_dummy:SetAbsOrigin(hook_loc + hook_step)
+					hook_dummy:SetAbsOrigin( hook_loc + hook_step  )
 
 					-- Recalculate position and distance
-					hook_loc = hook_dummy:GetAbsOrigin()
-					travel_distance = (hook_loc - caster_loc):Length2D()
+					hook_loc = hook_loc + hook_step
+					travel_distance = travel_distance + hook_speed
 					return tick_rate
 				end
-
-				-- If no target was hit and the maximum range is not reached, move the hook and keep going
-				
 
 				-- If we are here, this means the hook has to start reeling back; prepare return variables
 				local direction = ( caster_loc - hook_loc )
@@ -198,11 +197,10 @@ if IsServer() then
 					else
 
 						-- Move the hook and an eventual target
-						hook_dummy:SetAbsOrigin(hook_loc + hook_step)
-						ParticleManager:SetParticleControl(hook_pfx, 6, hook_loc + hook_step + Vector(0, 0, 90))
+						hook_dummy:SetAbsOrigin( Vector(hook_loc.x, hook_loc.y, hook_z) + hook_step)
 
 						if target_hit then
-							target:SetAbsOrigin(hook_loc + hook_step)
+							target:SetAbsOrigin( Vector(hook_loc.x, hook_loc.y, hook_z) + hook_step)
 							target:SetForwardVector(direction:Normalized())
 						end
 						
@@ -274,7 +272,7 @@ function modifier_meat_hook_lua:CheckState()
 end
 
 
-LinkLuaModifier( "modifier_meat_hook_followthrough_lua", "lua_abilities/heroes/pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
+LinkLuaModifier( "modifier_meat_hook_followthrough_lua", "hero/hero_pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
 
 modifier_meat_hook_followthrough_lua = class({})
 
@@ -286,6 +284,7 @@ end
 
 function modifier_meat_hook_followthrough_lua:OnDestroy()
 	if IsServer() then
+		self:GetCaster():StartGesture( ACT_DOTA_CHANNEL_ABILITY_1 )
 		self:GetCaster():RemoveGesture( ACT_DOTA_OVERRIDE_ABILITY_1 )
 	end
 end
@@ -302,26 +301,26 @@ end
 
 --------------------------------------------------------------------------------
 
-pudge_dismember_lua = class({})
+imba_pudge_dismember = class({})
 LinkLuaModifier( "pudge_dismember", "lua_abilities/heroes/modifiers/pudge_dismember.lua" ,LUA_MODIFIER_MOTION_NONE )
 
 --[[Author: Valve
 	Date: 26.09.2015.]]
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:GetConceptRecipientType()
+function imba_pudge_dismember:GetConceptRecipientType()
 	return DOTA_SPEECH_USER_ALL
 end
 
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:SpeakTrigger()
+function imba_pudge_dismember:SpeakTrigger()
 	return DOTA_ABILITY_SPEAK_CAST
 end
 
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:GetChannelTime()
+function imba_pudge_dismember:GetChannelTime()
 	self.duration = self:GetTalentSpecialValueFor( "duration" )
 
 	if IsServer() then
@@ -337,7 +336,7 @@ end
 
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:OnAbilityPhaseStart()
+function imba_pudge_dismember:OnAbilityPhaseStart()
 	if IsServer() then
 		self.hVictim = self:GetCursorTarget()
 	end
@@ -347,7 +346,7 @@ end
 
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:OnSpellStart()
+function imba_pudge_dismember:OnSpellStart()
 	if self.hVictim == nil then
 		return
 	end
@@ -364,7 +363,7 @@ end
 
 --------------------------------------------------------------------------------
 
-function pudge_dismember_lua:OnChannelFinish( bInterrupted )
+function imba_pudge_dismember:OnChannelFinish( bInterrupted )
 	if self.hVictim ~= nil then
 		self.hVictim:RemoveModifierByName("pudge_dismember" )
 	end
@@ -373,26 +372,26 @@ end
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-pudge_rot_lua = class({})
+imba_pudge_rot = class({})
 LinkLuaModifier( "modifier_rot_lua", "lua_abilities/heroes/modifiers/modifier_rot_lua.lua" ,LUA_MODIFIER_MOTION_NONE )
-LinkLuaModifier( "modifier_rot_death_lua", "lua_abilities/heroes/pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
+LinkLuaModifier( "modifier_rot_death_lua", "hero/hero_pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
 
 --[[Author: Valve
 	Date: 26.09.2015.
 	Applies the rot modifier on the caster depending on the toggle state]]
 --------------------------------------------------------------------------------
 
-function pudge_rot_lua:ProcsMagicStick()
+function imba_pudge_rot:ProcsMagicStick()
 	return false
 end
 
 --------------------------------------------------------------------------------
 
-function pudge_rot_lua:GetIntrinsicModifierName()
+function imba_pudge_rot:GetIntrinsicModifierName()
 	return	"modifier_rot_death_lua"
 end
 
-function pudge_rot_lua:OnHeroLevelUp()
+function imba_pudge_rot:OnHeroLevelUp()
 	if not self:GetCaster():HasModifier("modifier_rot_death_lua") then
 		self:GetCaster():AddNewModifier( self:GetCaster(), self, "modifier_rot_death_lua", nil )
 	end
@@ -400,7 +399,7 @@ end
 
 --------------------------------------------------------------------------------
 
-function pudge_rot_lua:OnToggle()
+function imba_pudge_rot:OnToggle()
 	-- Apply the rot modifier if the toggle is on
 	if self:GetToggleState() then
 		self:GetCaster():AddNewModifier( self:GetCaster(), self, "modifier_rot_lua", nil )
@@ -469,7 +468,7 @@ end
 -- Add additional functions
 --------------------------------------------------------------------------------------------------------
 
-LinkLuaModifier( "modifier_rot_death_lua_aura", "lua_abilities/heroes/pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
+LinkLuaModifier( "modifier_rot_death_lua_aura", "hero/hero_pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
 --------------------------------------------------------------------------------------------------------
 --		Aura Modifier: modifier_rot_death_lua_aura		
 --------------------------------------------------------------------------------------------------------
@@ -486,19 +485,16 @@ function modifier_rot_death_lua_aura:DeclareFunctions()
   return funcs
 end
 
-function modifier_rot_death_lua_aura:OnDeath(params)
-	if IsServer() and params.unit:HasModifier("modifier_rot_death_lua_aura") and params.unit:IsCore() and not params.unit.triggered then
-		local modifier = self:GetCaster():FindModifierByName("modifier_rot_death_lua")
-		modifier:SetStackCount(modifier:GetStackCount() +1)
-		params.unit.triggered = true
-	end
-end
+------------------------------------------
+------------------------------------------
+
+imba_pudge_flesh_heap = class({})
 
 ------------------------------------------
 ------------------------------------------
 
-imba_pudge_meat_hook = class({})
-function imba_pudge_meat_hook:GetCooldown(nLevel)
+imba_pudge_cleaver = class({})
+function imba_pudge_cleaver:GetCooldown(nLevel)
 	if self:GetCaster():HasScepter() then
 		return 4
 	else
@@ -507,30 +503,30 @@ function imba_pudge_meat_hook:GetCooldown(nLevel)
 end
 
 
-function imba_pudge_meat_hook:GetCustomCastErrorLocation(loc)
+function imba_pudge_cleaver:GetCustomCastErrorLocation(loc)
 	return "Already sent out your hook!"
 end
 if IsServer() then
-	function imba_pudge_meat_hook:OnAbilityPhaseStart()
+	function imba_pudge_cleaver:OnAbilityPhaseStart()
 		self:GetCaster():StartGesture( ACT_DOTA_OVERRIDE_ABILITY_1 )
 		return true
 	end
 
 	--------------------------------------------------------------------------------
 
-	function imba_pudge_meat_hook:OnAbilityPhaseInterrupted()
+	function imba_pudge_cleaver:OnAbilityPhaseInterrupted()
 		self:GetCaster():RemoveGesture( ACT_DOTA_OVERRIDE_ABILITY_1 )
 	end
 
 	--------------------------------------------------------------------------------
-	function imba_pudge_meat_hook:CastFilterResultLocation(loc)
+	function imba_pudge_cleaver:CastFilterResultLocation(loc)
 		if self.hook_launched then
 			return UF_FAIL_CUSTOM
 		else
 			return UF_SUCCESS
 		end
 	end
-	function imba_pudge_meat_hook:OnSpellStart()
+	function imba_pudge_cleaver:OnSpellStart()
 		local caster = self:GetCaster()
 		local ability_level = self:GetLevel() - 1
 
@@ -555,26 +551,25 @@ if IsServer() then
 		local start_loc = caster_loc + (self:GetCursorPosition() - caster_loc):Normalized() * hook_width
 
 		-- Prevent Pudge from using tps while the hook is out
-		local flFollowthroughDuration = ( hook_range / hook_speed * 0.75 )
-		self:GetCaster():AddNewModifier(self:GetCaster(), self, "modifier_meat_hook_followthrough_lua", {duration = flFollowthroughDuration})
+		local followthrough = self:GetCaster():AddNewModifier(self:GetCaster(), self, "modifier_meat_hook_followthrough_lua", {duration = flFollowthroughDuration})
 
 		-- Play Hook launch sound
 		caster:EmitSound("Hero_Pudge.AttackHookExtend")
 
 		-- Create and set up the Hook dummy unit
-		local hook_dummy = CreateUnitByName("npc_dummy_blank", start_loc + Vector(0, 0, 150), false, caster, caster, caster:GetTeam())
-		hook_dummy:AddAbility("hide_hero"):SetLevel(1)
+		local hook_loc = start_loc + Vector(0, 0, 150)
+		local hook_dummy = CreateUnitByName("npc_dummy_unit", hook_loc, false, caster, caster, caster:GetTeam())
 		hook_dummy:SetForwardVector(caster:GetForwardVector())
 		
 		-- Attach the Hook particle
-		local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_chain.vpcf", PATTACH_RENDERORIGIN_FOLLOW, caster)
-		ParticleManager:SetParticleAlwaysSimulate(hook_pfx)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 0, caster, PATTACH_POINT_FOLLOW, "attach_weapon_chain_rt", caster_loc, true)
-		ParticleManager:SetParticleControl(hook_pfx, 1, start_loc)
-		ParticleManager:SetParticleControl(hook_pfx, 2, Vector(hook_speed, hook_range, hook_width) )
-		ParticleManager:SetParticleControl(hook_pfx, 6, start_loc)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 6, hook_dummy, PATTACH_POINT_FOLLOW, "attach_overhead", start_loc, false)
-		ParticleManager:SetParticleControlEnt(hook_pfx, 7, caster, PATTACH_CUSTOMORIGIN, nil, caster_loc, true)
+		-- local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_chain.vpcf", PATTACH_RENDERORIGIN_FOLLOW, caster)
+		-- ParticleManager:SetParticleAlwaysSimulate(hook_pfx)
+		-- ParticleManager:SetParticleControlEnt(hook_pfx, 0, caster, PATTACH_POINT_FOLLOW, "attach_weapon_chain_rt", caster_loc, true)
+		-- ParticleManager:SetParticleControl(hook_pfx, 1, hook_loc)
+		-- ParticleManager:SetParticleControl(hook_pfx, 2, Vector(hook_speed, hook_range, hook_width) )
+		-- ParticleManager:SetParticleControl(hook_pfx, 6, hook_loc)
+		-- ParticleManager:SetParticleControlEnt(hook_pfx, 6, hook_dummy, PATTACH_POINT_FOLLOW, "attach_overhead", hook_loc, false)
+		-- ParticleManager:SetParticleControlEnt(hook_pfx, 7, caster, PATTACH_CUSTOMORIGIN, nil, caster_loc, true)
 
 		-- Remove the caster's hook
 		local weapon_hook
@@ -586,7 +581,6 @@ if IsServer() then
 		end
 
 		-- Initialize Hook variables
-		local hook_loc = start_loc
 		local tick_rate = 0.03
 		hook_speed = hook_speed * tick_rate
 
@@ -615,17 +609,12 @@ if IsServer() then
 				-- Apply stun/root modifier, and damage if the target is an enemy
 				if caster:GetTeam() ~= target:GetTeam() then
 					ApplyDamage({attacker = caster, victim = target, ability = ability, damage = hook_damage, damage_type = DAMAGE_TYPE_PURE})
-					caster:ModifyThreat(40)
-				else
-					target:ModifyThreat(self:GetTalentSpecialValueFor("threat_reduction"))
 				end
 
 				-- Play the hit sound and particle
 				target:EmitSound("Hero_Pudge.AttackHookImpact")
 				local hook_pfx = ParticleManager:CreateParticle("particles/units/heroes/hero_pudge/pudge_meathook_impact.vpcf", PATTACH_ABSORIGIN_FOLLOW, target)
-
-				-- Increase hook return speed
-				-- hook_speed = math.max(hook_speed, 3000 * tick_rate)
+				followthrough:Destroy()
 			elseif travel_distance < hook_range then
 
 				-- Move the hook
@@ -661,7 +650,7 @@ if IsServer() then
 			else
 				caster:EmitSound("pudge_pud_ability_hook_miss_0"..RandomInt(8,9))
 			end
-
+			followthrough:Destroy()
 			-- Hook reeling loop
 			Timers:CreateTimer(tick_rate, function()
 
@@ -779,32 +768,6 @@ function modifier_meat_hook_lua:CheckState()
 	end
 end
 
-
-LinkLuaModifier( "modifier_meat_hook_followthrough_lua", "lua_abilities/heroes/pudge.lua" ,LUA_MODIFIER_MOTION_NONE )
-
-modifier_meat_hook_followthrough_lua = class({})
-
---------------------------------------------------------------------------------
-
-function modifier_meat_hook_followthrough_lua:IsHidden()
-	return true
-end
-
-function modifier_meat_hook_followthrough_lua:OnDestroy()
-	if IsServer() then
-		self:GetCaster():RemoveGesture( ACT_DOTA_OVERRIDE_ABILITY_1 )
-	end
-end
-
---------------------------------------------------------------------------------
-
-function modifier_meat_hook_followthrough_lua:CheckState()
-	local state = {
-	[MODIFIER_STATE_STUNNED] = true,
-	}
-
-	return state
-end
 
 --------------------------------------------------------------------------------
 
